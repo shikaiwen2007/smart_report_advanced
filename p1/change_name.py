@@ -3,6 +3,8 @@ from dotenv import load_dotenv
 import os
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
+from typing import Optional
+import json
 
 # 加载 .env
 load_dotenv()
@@ -39,6 +41,7 @@ system = """你是一个文件命名助手，负责将输入的文件名转换�
 """
 
 prompt = ChatPromptTemplate.from_messages([("system", system), ("human", "{input}")])
+# human 消息：用户输入的原始文件名（{input}）。
 
 # Pydantic
 class ChangeName(BaseModel):
@@ -50,12 +53,93 @@ class ChangeName(BaseModel):
 structured_llm = llm.with_structured_output(ChangeName)
 few_shot_structured_llm = prompt | structured_llm
 
+
+
+# 定义结构化输出模型
+class NamePair(BaseModel):
+    location: str = Field(description="名称中的地点")
+    sub_location: str = Field(description="名称中的具体地点")
+    issue_found: list[str] = Field(description="名称中的问题")
+    notes: Optional[str] = Field(default=None, description="名称中的问题备注")
+    photo_number: Optional[int] = Field(default=None, description="名称中的问题数量")
+
+# 修改 system prompt，让模型直接拆分 new_name
+system_extract = """你是一个信息提取助手。
+输入的内容格式为 new_name，格式如下：
+<地点>,<详细位置>,<卫生问题>,<备注>(<照片序号>)
+
+请从输入中提取信息，并严格按照以下 JSON 格式输出：
+{
+  "location": "...",
+  "sub_location": "...",
+  "issue_found": ["..."],
+  "notes": "...",
+  "photo_number": ...
+}
+
+示例：
+- 输入："北沪航公路,西闸公路路口,捕蝇笼饵料干"
+  输出：{
+    "location": "北沪航公路",
+    "sub_location": "西闸公路路口",
+    "issue_found": ["捕蝇笼饵料干"],
+    "notes": null,
+    "photo_number": null
+  }
+
+- 输入："西闸公路,1117号璨旁背街小巷,卫生死角散在垃圾/成蝇密度高(2)"
+  输出：{
+    "location": "西闸公路",
+    "sub_location": "1117号璨旁背街小巷",
+    "issue_found": ["卫生死角散在垃圾", "成蝇密度高"],
+    "notes": null,
+    "photo_number": 2
+  }
+
+- 输入："东风新村,19号旁,积水容器阳性,多处轮胎积水(9处以上)'"
+  输出：{
+    "location": "东风新村",
+    "sub_location": "19号旁",
+    "issue_found": ["积水容器阳性", "多处轮胎积水"],
+    "notes": "9处以上",
+    "photo_number": null
+  }
+"""
+
+prompt_extract = ChatPromptTemplate.from_messages([
+    ("system", system_extract),
+    ("human", "{input}")
+])
+
+structured_llm_extract = llm.with_structured_output(NamePair)
+chain = prompt_extract | structured_llm_extract
+
+results = []
+
 with open("old_name.txt", "r", encoding="utf-8") as f:
     lines = [line.strip() for line in f if line.strip()]
 
 for line in lines:
     try:
-        result = few_shot_structured_llm.invoke({"input": line})
-        print(result)
+        # 第一步：获取 old_name 和 new_name
+        for line in lines:
+            result = few_shot_structured_llm.invoke({"input": line}) # 输入：{"input": line} → human 消息。
+        
+        # 第二步：用 new_name 提取分类信息
+        extracted = chain.invoke({"input": result.new_name})
+        
+        # 组装最终 JSON
+        record = {
+            "path": f"your/image/path/{result.old_name}.jpg",  # 你可以根据需要拼接真实路径
+            "old_name": result.old_name,
+            "names_pairs": extracted.model_dump()
+        }
+        results.append(record)
+
     except Exception as e:
-        print(f"处理失败：{line}，错误：{e}")
+        with open("issue_name.txt", "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+# 保存结果到 JSON 文件
+with open("output.json", "w", encoding="utf-8") as f:
+    json.dump(results, f, ensure_ascii=False, indent=2)
