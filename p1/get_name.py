@@ -14,7 +14,7 @@ for path, dirs, files in os.walk(folderpath): # path：当前遍历到的目录�
     for filename in fnmatch.filter(files, "*.jpg"):
         problem_list.append(filename.split(".")[0])
 
-with open("p1\old_name.txt", 'w', encoding='utf-8') as f:
+with open("old_name.txt", 'w', encoding='utf-8') as f:
     f.write("\n".join(problem_list))    
             
 print("图片名称已写入！")
